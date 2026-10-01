@@ -18,11 +18,12 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from .tle_fetch import fetch_tle_group
-from .propagate import build_time_grid
+from .propagate import build_time_grid, propagate_satellite
 from .screening import find_candidate_pairs, screen_pair
 from .risk import classify, is_reportable
 
@@ -156,3 +157,72 @@ async def ws_conjunctions(websocket: WebSocket):
             await websocket.receive_text()  # keep connection alive; ignore client msgs
     except WebSocketDisconnect:
         connected_clients.discard(websocket)
+
+
+# ---------------------------------------------------------------------------
+# Frontend support: on-demand position queries for the 3D viewer.
+# These reuse the same SGP4 propagation as the screening pipeline, just
+# called for a specific satellite/time on request instead of on a schedule.
+# ---------------------------------------------------------------------------
+
+def _find_satellite(norad_id: int) -> dict | None:
+    for sat in state["satellites"]:
+        if sat["norad_id"] == norad_id:
+            return sat
+    return None
+
+
+@app.get("/positions")
+def get_positions(
+    norad_ids: str = Query(..., description="Comma-separated NORAD IDs, e.g. '25544,36086'"),
+    time: datetime = Query(..., description="ISO 8601 timestamp, e.g. 2026-08-08T00:00:00Z"),
+):
+    """Current ECI position (km) for each requested satellite at a single instant."""
+    if time.tzinfo is None:
+        time = time.replace(tzinfo=timezone.utc)
+
+    ids = [int(x) for x in norad_ids.split(",") if x.strip()]
+    positions = {}
+    missing = []
+    for norad_id in ids:
+        sat = _find_satellite(norad_id)
+        if sat is None:
+            missing.append(norad_id)
+            continue
+        pos = propagate_satellite(sat["line1"], sat["line2"], [time])[0]
+        if any(v != v for v in pos):  # NaN check, no numpy import needed here
+            missing.append(norad_id)
+            continue
+        positions[norad_id] = {"x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2])}
+
+    return {"time": time.isoformat(), "positions": positions, "missing": missing}
+
+
+class TrajectoryRequest(BaseModel):
+    norad_id: int
+    start_time: datetime
+    duration_minutes: float = 100.0   # ~one LEO orbital period by default
+    step_seconds: float = 30.0
+
+
+@app.post("/trajectory")
+def get_trajectory(req: TrajectoryRequest):
+    """Full orbit path (a sequence of ECI positions) for drawing a dotted orbit line."""
+    sat = _find_satellite(req.norad_id)
+    if sat is None:
+        raise HTTPException(status_code=404, detail=f"No tracked satellite with NORAD ID {req.norad_id}")
+
+    start = req.start_time
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+
+    times = build_time_grid(start, req.duration_minutes / 60.0, req.step_seconds)
+    positions = propagate_satellite(sat["line1"], sat["line2"], times)
+
+    points = []
+    for t, pos in zip(times, positions):
+        if pos[0] != pos[0]:  # NaN check
+            continue
+        points.append({"time": t.isoformat(), "x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2])})
+
+    return {"norad_id": req.norad_id, "name": sat["name"], "points": points}
