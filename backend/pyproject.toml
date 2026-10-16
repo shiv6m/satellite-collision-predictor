@@ -10,3 +10,7 @@ python_version = "3.11"
 strict = true
 ignore_missing_imports = true
 files = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
