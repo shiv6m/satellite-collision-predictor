@@ -1,5 +1,7 @@
 """Data models shared across the backend."""
+
 from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -18,4 +20,4 @@ class ConjunctionEvent(BaseModel):
     time_of_closest_approach: datetime
     miss_distance_km: float
     relative_speed_km_s: float
-    risk_level: str  # "low" | "moderate" | "high"
+    risk_level: str  # "low" | "moderate" | "high" | "co-orbiting"

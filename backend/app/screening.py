@@ -13,9 +13,13 @@ Stage 2 (fine screening): for the much smaller set of pairs that survive
 stage 1, we actually propagate both satellites across the time window and
 measure the real 3D distance between them at each timestep.
 """
-import numpy as np
+
 from datetime import datetime
-from sgp4.api import Satrec, jday
+from typing import Any
+
+import numpy as np
+from sgp4.api import Satrec
+
 from .propagate import _to_jd_fr
 
 EARTH_RADIUS_KM = 6378.135
@@ -29,7 +33,9 @@ def altitude_band(line1: str, line2: str) -> tuple[float, float]:
     return perigee_km - EARTH_RADIUS_KM, apogee_km - EARTH_RADIUS_KM
 
 
-def find_candidate_pairs(satellites: list[dict], margin_km: float = 50.0) -> list[tuple[dict, dict]]:
+def find_candidate_pairs(
+    satellites: list[dict[str, Any]], margin_km: float = 50.0
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Stage 1: keep only pairs whose altitude bands overlap (+ margin)."""
     bands = []
     for sat in satellites:
@@ -49,7 +55,9 @@ def find_candidate_pairs(satellites: list[dict], margin_km: float = 50.0) -> lis
     return candidates
 
 
-def _propagate_with_velocity(line1: str, line2: str, times: list[datetime]):
+def _propagate_with_velocity(
+    line1: str, line2: str, times: list[datetime]
+) -> tuple[np.ndarray, np.ndarray]:
     sat = Satrec.twoline2rv(line1, line2)
     jd = np.zeros(len(times))
     fr = np.zeros(len(times))
@@ -62,7 +70,9 @@ def _propagate_with_velocity(line1: str, line2: str, times: list[datetime]):
     return positions, velocities
 
 
-def screen_pair(sat_a: dict, sat_b: dict, times: list[datetime]):
+def screen_pair(
+    sat_a: dict[str, Any], sat_b: dict[str, Any], times: list[datetime]
+) -> dict[str, Any] | None:
     """
     Stage 2: propagate both satellites and find their closest approach.
     Returns dict with miss_distance_km, time_of_closest_approach,

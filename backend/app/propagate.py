@@ -7,14 +7,18 @@ Earth's center, NOT from the ground. That's exactly what we want for
 comparing two satellites' positions to each other, since we don't care
 about lat/lon, just "how far apart are these two points in space."
 """
+
+from datetime import datetime, timedelta
+from typing import Any
+
 import numpy as np
-from datetime import datetime, timedelta, timezone
-from sgp4.api import Satrec, SatrecArray, jday
+from sgp4.api import Satrec, jday
 
 
 def _to_jd_fr(dt: datetime) -> tuple[float, float]:
     """Convert a datetime to SGP4's split julian date format (jd, fr)."""
-    return jday(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond / 1e6)
+    jd, fr = jday(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond / 1e6)
+    return float(jd), float(fr)
 
 
 def build_time_grid(start: datetime, duration_hours: float, step_seconds: float) -> list[datetime]:
@@ -40,7 +44,9 @@ def propagate_satellite(line1: str, line2: str, times: list[datetime]) -> np.nda
     return positions
 
 
-def propagate_many(satellites: list[dict], times: list[datetime]) -> dict[int, np.ndarray]:
+def propagate_many(
+    satellites: list[dict[str, Any]], times: list[datetime]
+) -> dict[int, np.ndarray]:
     """
     Propagate a batch of satellites (each dict has line1/line2/norad_id).
     Returns {norad_id: (N,3) position array}. Skips satellites whose TLE

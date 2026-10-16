@@ -11,7 +11,7 @@ distance as a practical proxy, which is standard for a screening-level
 system like this.
 """
 
-REPORT_THRESHOLD_KM = 10.0   # ignore anything farther than this
+REPORT_THRESHOLD_KM = 10.0  # ignore anything farther than this
 HIGH_RISK_KM = 1.0
 MODERATE_RISK_KM = 5.0
 

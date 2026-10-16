@@ -9,6 +9,9 @@ compute that from a TLE that's a few hours old).
 
 Docs: https://celestrak.org/NORAD/documentation/gp-data-formats.php
 """
+
+from typing import Any
+
 import httpx
 
 CELESTRAK_URL = "https://celestrak.org/NORAD/elements/gp.php"
@@ -20,7 +23,7 @@ CELESTRAK_URL = "https://celestrak.org/NORAD/elements/gp.php"
 #   debris     -> tracked debris objects (COSMOS-2251-DEB, IRIDIUM-33-DEB, etc.)
 
 
-async def fetch_tle_group(group: str = "stations") -> list[dict]:
+async def fetch_tle_group(group: str = "stations") -> list[dict[str, Any]]:
     """
     Fetch a named group of satellites as TLE text, parse into structured
     records. Returns a list of dicts: {name, line1, line2, norad_id}.
@@ -34,9 +37,9 @@ async def fetch_tle_group(group: str = "stations") -> list[dict]:
     return _parse_tle_text(text)
 
 
-def _parse_tle_text(text: str) -> list[dict]:
+def _parse_tle_text(text: str) -> list[dict[str, Any]]:
     """TLE files are 3 lines per satellite: name, line1, line2."""
-    lines = [l for l in text.splitlines() if l.strip()]
+    lines = [line for line in text.splitlines() if line.strip()]
     satellites = []
     for i in range(0, len(lines) - 2, 3):
         name = lines[i].strip()
@@ -45,7 +48,5 @@ def _parse_tle_text(text: str) -> list[dict]:
         if not (line1.startswith("1 ") and line2.startswith("2 ")):
             continue  # malformed block, skip
         norad_id = int(line1[2:7])
-        satellites.append(
-            {"name": name, "line1": line1, "line2": line2, "norad_id": norad_id}
-        )
+        satellites.append({"name": name, "line1": line1, "line2": line2, "norad_id": norad_id})
     return satellites

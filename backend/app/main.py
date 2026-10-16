@@ -13,38 +13,41 @@ already know it): insert each ConjunctionEvent into a table, which gives
 you history, and lets multiple backend instances share state. The REST
 endpoints below would then read from Supabase instead of the local dict.
 """
+
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .tle_fetch import fetch_tle_group
 from .propagate import build_time_grid, propagate_satellite
-from .screening import find_candidate_pairs, screen_pair
 from .risk import classify, is_reportable
+from .screening import find_candidate_pairs, screen_pair
+from .tle_fetch import fetch_tle_group
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("collision-predictor")
 
-TRACKED_GROUP = "stations"       # start small (~15 sats) while you're testing;
-                                   # bump to "starlink" (~6000) once it's working
-REFRESH_INTERVAL_SECONDS = 300    # how often to re-fetch TLEs + re-screen
-SCREEN_WINDOW_HOURS = 24          # how far ahead to look for conjunctions
-SCREEN_STEP_SECONDS = 30          # time resolution of the screening pass
+TRACKED_GROUP = "stations"  # start small (~15 sats) while you're testing;
+# bump to "starlink" (~6000) once it's working
+REFRESH_INTERVAL_SECONDS = 300  # how often to re-fetch TLEs + re-screen
+SCREEN_WINDOW_HOURS = 24  # how far ahead to look for conjunctions
+SCREEN_STEP_SECONDS = 30  # time resolution of the screening pass
 
-state = {
-    "satellites": [],       # last fetched TLE set
-    "conjunctions": [],      # last screening results (list of dicts)
+state: dict[str, Any] = {
+    "satellites": [],  # last fetched TLE set
+    "conjunctions": [],  # last screening results (list of dicts)
     "last_updated": None,
 }
 connected_clients: set[WebSocket] = set()
 
 
-async def refresh_loop():
+async def refresh_loop() -> None:
     while True:
         try:
             await run_screening_pass()
@@ -53,44 +56,52 @@ async def refresh_loop():
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
 
 
-async def run_screening_pass():
+async def run_screening_pass() -> None:
     log.info(f"Fetching TLE group '{TRACKED_GROUP}'...")
     satellites = await fetch_tle_group(TRACKED_GROUP)
     log.info(f"Fetched {len(satellites)} satellites")
 
-    times = build_time_grid(
-        datetime.now(timezone.utc), SCREEN_WINDOW_HOURS, SCREEN_STEP_SECONDS
-    )
+    times = build_time_grid(datetime.now(UTC), SCREEN_WINDOW_HOURS, SCREEN_STEP_SECONDS)
 
     candidates = find_candidate_pairs(satellites)
     log.info(f"{len(candidates)} candidate pairs after coarse filter")
 
-    events = []
+    events: list[dict[str, Any]] = []
     for sat_a, sat_b in candidates:
         result = screen_pair(sat_a, sat_b, times)
         if result and is_reportable(result["miss_distance_km"]):
-            events.append({
-                "sat1_norad_id": sat_a["norad_id"],
-                "sat1_name": sat_a["name"],
-                "sat2_norad_id": sat_b["norad_id"],
-                "sat2_name": sat_b["name"],
-                "time_of_closest_approach": result["time_of_closest_approach"].isoformat(),
-                "miss_distance_km": round(result["miss_distance_km"], 3),
-                "relative_speed_km_s": round(result["relative_speed_km_s"], 3),
-                "risk_level": classify(result["miss_distance_km"], result["relative_speed_km_s"]),
-            })
+            events.append(
+                {
+                    "sat1_norad_id": sat_a["norad_id"],
+                    "sat1_name": sat_a["name"],
+                    "sat2_norad_id": sat_b["norad_id"],
+                    "sat2_name": sat_b["name"],
+                    "time_of_closest_approach": result["time_of_closest_approach"].isoformat(),
+                    "miss_distance_km": round(result["miss_distance_km"], 3),
+                    "relative_speed_km_s": round(result["relative_speed_km_s"], 3),
+                    "risk_level": classify(
+                        result["miss_distance_km"], result["relative_speed_km_s"]
+                    ),
+                }
+            )
 
     events.sort(key=lambda e: e["miss_distance_km"])
     state["satellites"] = satellites
     state["conjunctions"] = events
-    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+    state["last_updated"] = datetime.now(UTC).isoformat()
     log.info(f"Found {len(events)} reportable conjunctions")
 
-    await broadcast({"type": "conjunctions_update", "data": events, "last_updated": state["last_updated"]})
+    await broadcast(
+        {
+            "type": "conjunctions_update",
+            "data": events,
+            "last_updated": state["last_updated"],
+        }
+    )
 
 
-async def broadcast(message: dict):
-    dead = set()
+async def broadcast(message: dict[str, Any]) -> None:
+    dead: set[WebSocket] = set()
     for ws in connected_clients:
         try:
             await ws.send_json(message)
@@ -100,7 +111,7 @@ async def broadcast(message: dict):
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     task = asyncio.create_task(refresh_loop())
     yield
     task.cancel()
@@ -117,17 +128,17 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, Any]:
     return {"status": "ok", "last_updated": state["last_updated"]}
 
 
 @app.get("/satellites")
-def get_satellites():
+def get_satellites() -> dict[str, Any]:
     return {"count": len(state["satellites"]), "satellites": state["satellites"]}
 
 
 @app.get("/conjunctions")
-def get_conjunctions():
+def get_conjunctions() -> dict[str, Any]:
     return {
         "count": len(state["conjunctions"]),
         "last_updated": state["last_updated"],
@@ -136,22 +147,24 @@ def get_conjunctions():
 
 
 @app.post("/refresh")
-async def manual_refresh():
+async def manual_refresh() -> dict[str, Any]:
     """Trigger an immediate screening pass instead of waiting for the interval."""
     await run_screening_pass()
     return {"status": "refreshed", "count": len(state["conjunctions"])}
 
 
 @app.websocket("/ws/conjunctions")
-async def ws_conjunctions(websocket: WebSocket):
+async def ws_conjunctions(websocket: WebSocket) -> None:
     await websocket.accept()
     connected_clients.add(websocket)
     # send current state immediately so the client doesn't wait for the next cycle
-    await websocket.send_json({
-        "type": "conjunctions_update",
-        "data": state["conjunctions"],
-        "last_updated": state["last_updated"],
-    })
+    await websocket.send_json(
+        {
+            "type": "conjunctions_update",
+            "data": state["conjunctions"],
+            "last_updated": state["last_updated"],
+        }
+    )
     try:
         while True:
             await websocket.receive_text()  # keep connection alive; ignore client msgs
@@ -165,25 +178,26 @@ async def ws_conjunctions(websocket: WebSocket):
 # called for a specific satellite/time on request instead of on a schedule.
 # ---------------------------------------------------------------------------
 
-def _find_satellite(norad_id: int) -> dict | None:
+
+def _find_satellite(norad_id: int) -> dict[str, Any] | None:
     for sat in state["satellites"]:
         if sat["norad_id"] == norad_id:
-            return sat
+            return dict(sat)
     return None
 
 
 @app.get("/positions")
 def get_positions(
-    norad_ids: str = Query(..., description="Comma-separated NORAD IDs, e.g. '25544,36086'"),
-    time: datetime = Query(..., description="ISO 8601 timestamp, e.g. 2026-08-08T00:00:00Z"),
-):
+    norad_ids: Annotated[str, Query(description="Comma-separated NORAD IDs, e.g. '25544,36086'")],
+    time: Annotated[datetime, Query(description="ISO 8601 timestamp, e.g. 2026-08-08T00:00:00Z")],
+) -> dict[str, Any]:
     """Current ECI position (km) for each requested satellite at a single instant."""
     if time.tzinfo is None:
-        time = time.replace(tzinfo=timezone.utc)
+        time = time.replace(tzinfo=UTC)
 
     ids = [int(x) for x in norad_ids.split(",") if x.strip()]
-    positions = {}
-    missing = []
+    positions: dict[int, dict[str, float]] = {}
+    missing: list[int] = []
     for norad_id in ids:
         sat = _find_satellite(norad_id)
         if sat is None:
@@ -201,28 +215,38 @@ def get_positions(
 class TrajectoryRequest(BaseModel):
     norad_id: int
     start_time: datetime
-    duration_minutes: float = 100.0   # ~one LEO orbital period by default
+    duration_minutes: float = 100.0  # ~one LEO orbital period by default
     step_seconds: float = 30.0
 
 
 @app.post("/trajectory")
-def get_trajectory(req: TrajectoryRequest):
+def get_trajectory(req: TrajectoryRequest) -> dict[str, Any]:
     """Full orbit path (a sequence of ECI positions) for drawing a dotted orbit line."""
     sat = _find_satellite(req.norad_id)
     if sat is None:
-        raise HTTPException(status_code=404, detail=f"No tracked satellite with NORAD ID {req.norad_id}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No tracked satellite with NORAD ID {req.norad_id}",
+        )
 
     start = req.start_time
     if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
+        start = start.replace(tzinfo=UTC)
 
     times = build_time_grid(start, req.duration_minutes / 60.0, req.step_seconds)
     positions = propagate_satellite(sat["line1"], sat["line2"], times)
 
-    points = []
-    for t, pos in zip(times, positions):
+    points: list[dict[str, Any]] = []
+    for t, pos in zip(times, positions, strict=True):
         if pos[0] != pos[0]:  # NaN check
             continue
-        points.append({"time": t.isoformat(), "x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2])})
+        points.append(
+            {
+                "time": t.isoformat(),
+                "x": float(pos[0]),
+                "y": float(pos[1]),
+                "z": float(pos[2]),
+            }
+        )
 
     return {"norad_id": req.norad_id, "name": sat["name"], "points": points}
